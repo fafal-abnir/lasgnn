@@ -1,0 +1,6 @@
+pytorch-lightning==2.4.0
+pandas==2.2.2
+numpy==2.0.1
+scikit-learn==1.5.1
+
+
