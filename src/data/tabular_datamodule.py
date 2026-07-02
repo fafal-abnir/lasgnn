@@ -30,12 +30,6 @@ class TabularDataset(Dataset):
 
 
 class TabularAMLDataModule(L.LightningDataModule):
-    """
-    A more faithful Tab-AML style tabular preprocessing path.
-
-    The paper is on SAML-D, but this module also works on AMLSim if columns exist.
-    """
-
     def __init__(
         self,
         dataset_name: str,
@@ -68,10 +62,33 @@ class TabularAMLDataModule(L.LightningDataModule):
         df.columns = df.columns.str.lower().str.strip()
         return df
 
+    def _add_calendar_features(self, df: pd.DataFrame, timestamp_col: str) -> pd.DataFrame:
+        if np.issubdtype(df[timestamp_col].dtype, np.number):
+            ts_num = pd.to_numeric(df[timestamp_col], errors="coerce")
+            dt = pd.to_datetime(ts_num, unit="s", origin="unix", errors="coerce", utc=True)
+        else:
+            dt = pd.to_datetime(df[timestamp_col], errors="coerce", utc=True)
+
+        df = df.copy()
+        df["__ts_num__"] = pd.to_numeric(
+            pd.Series(dt.astype("int64") / 1e9, index=df.index),
+            errors="coerce",
+        )
+
+        df = df.dropna(subset=["__ts_num__"]).copy()
+        dt = pd.to_datetime(df["__ts_num__"], unit="s", utc=True)
+
+        df["day"] = dt.dt.day.astype(np.int64)
+        df["month"] = dt.dt.month.astype(np.int64)
+        df["year"] = dt.dt.year.astype(np.int64)
+        df["hour"] = dt.dt.hour.astype(np.int64)
+        df["is_weekend"] = (dt.dt.dayofweek >= 5).astype(np.int64)
+        df["day_of_week"] = dt.dt.dayofweek.astype(np.int64)
+
+        return df
+
     def _prepare_samld(self, df: pd.DataFrame) -> pd.DataFrame:
         rename_map = {
-            "sender_account": "sender_account",
-            "receiver_account": "receiver_account",
             "transaction_amount": "amount",
             "amt": "amount",
             "tx_amount": "amount",
@@ -90,7 +107,7 @@ class TabularAMLDataModule(L.LightningDataModule):
         else:
             raise ValueError("SAML-D requires one of: date, time, timestamp")
 
-        required = ["sender_account", "receiver_account", "amount", "label", time_col]
+        required = ["amount", "label", time_col]
         missing = [c for c in required if c not in df.columns]
         if missing:
             raise ValueError(f"SAML-D missing required columns: {missing}. Found: {list(df.columns)}")
@@ -101,39 +118,37 @@ class TabularAMLDataModule(L.LightningDataModule):
         df = df.dropna(subset=required).copy()
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
         df["label"] = pd.to_numeric(df["label"], errors="coerce").fillna(0).astype(int)
+        df = self._add_calendar_features(df, time_col)
+        df = df.dropna(subset=["amount"]).copy()
 
-        ts = pd.to_datetime(df[time_col], errors="coerce", utc=True)
-        if ts.isna().all():
-            df["timestamp"] = pd.to_numeric(df[time_col], errors="coerce")
-        else:
-            df["timestamp"] = ts.astype("int64") / 1e9
-
-        df = df.dropna(subset=["amount", "timestamp"]).copy()
-        df = df.sort_values("timestamp").reset_index(drop=True)
-
-        # Temporal feature engineering faithful to paper spirit.
-        dt = pd.to_datetime(df["timestamp"], unit="s", utc=True)
-        df["day"] = dt.dt.day.astype(np.int64)
-        df["month"] = dt.dt.month.astype(np.int64)
-        df["year"] = dt.dt.year.astype(np.int64)
-        df["hour"] = dt.dt.hour.astype(np.int64)
-        df["is_weekend"] = (dt.dt.dayofweek >= 5).astype(np.int64)
-        df["day_of_week"] = dt.dt.dayofweek.astype(np.int64)
-
-        # log transform amount
+        df = df.sort_values("__ts_num__").reset_index(drop=True)
         df["amount"] = np.log1p(df["amount"].clip(lower=0))
 
-        # Drop original temporal field(s) and typology if present
-        drop_cols = [c for c in [time_col, "timestamp", "laundering_type", "typology_classification"] if c in df.columns]
-        # keep timestamp-derived features only, not raw timestamp
-        df = df.drop(columns=drop_cols, errors="ignore")
+        keep_cols = [
+            "amount",
+            "label",
+            "day",
+            "month",
+            "year",
+            "hour",
+            "is_weekend",
+            "day_of_week",
+        ]
+        safe_optional_cat = [
+            "sender_bank_location",
+            "receiver_bank_location",
+            "payment_currency",
+            "received_currency",
+            "payment_type",
+        ]
+        keep_cols += [c for c in safe_optional_cat if c in df.columns]
+        keep_cols += ["__ts_num__"]
 
+        df = df[keep_cols].copy()
         return df
 
     def _prepare_amlsim(self, df: pd.DataFrame) -> pd.DataFrame:
         rename_map = {
-            "sender_account_id": "sender_account",
-            "receiver_account_id": "receiver_account",
             "tx_amount": "amount",
             "time": "timestamp",
             "is_fraud": "label",
@@ -142,7 +157,7 @@ class TabularAMLDataModule(L.LightningDataModule):
             if old in df.columns and new not in df.columns:
                 df = df.rename(columns={old: new})
 
-        required = ["sender_account", "receiver_account", "amount", "label", "timestamp"]
+        required = ["amount", "label", "timestamp"]
         missing = [c for c in required if c not in df.columns]
         if missing:
             raise ValueError(f"AMLSim missing required columns: {missing}. Found: {list(df.columns)}")
@@ -153,32 +168,32 @@ class TabularAMLDataModule(L.LightningDataModule):
         df = df.dropna(subset=required).copy()
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
         df["label"] = pd.to_numeric(df["label"], errors="coerce").fillna(0).astype(int)
+        df = self._add_calendar_features(df, "timestamp")
+        df = df.dropna(subset=["amount"]).copy()
 
-        if np.issubdtype(df["timestamp"].dtype, np.number):
-            df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")
-            dt = pd.to_datetime(df["timestamp"], unit="s", errors="coerce", utc=True)
-            if dt.isna().all():
-                # fallback for AMLSim step-like timestamps
-                # convert relative step into synthetic datetime anchored at epoch
-                dt = pd.to_datetime(df["timestamp"], unit="s", origin="unix", utc=True)
-        else:
-            dt = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
-            df["timestamp"] = dt.astype("int64") / 1e9
-
-        df = df.dropna(subset=["amount", "timestamp"]).copy()
-        df = df.sort_values("timestamp").reset_index(drop=True)
-
-        df["day"] = dt.dt.day.fillna(0).astype(np.int64)
-        df["month"] = dt.dt.month.fillna(0).astype(np.int64)
-        df["year"] = dt.dt.year.fillna(0).astype(np.int64)
-        df["hour"] = dt.dt.hour.fillna(0).astype(np.int64)
-        df["is_weekend"] = (dt.dt.dayofweek.fillna(0) >= 5).astype(np.int64)
-        df["day_of_week"] = dt.dt.dayofweek.fillna(0).astype(np.int64)
-
+        df = df.sort_values("__ts_num__").reset_index(drop=True)
         df["amount"] = np.log1p(df["amount"].clip(lower=0))
 
-        drop_cols = [c for c in ["timestamp", "transaction_timestamp", "datetime"] if c in df.columns]
-        df = df.drop(columns=drop_cols, errors="ignore")
+        # STRICT AMLSim whitelist to avoid leakage
+        keep_cols = [
+            "amount",
+            "label",
+            "day",
+            "month",
+            "year",
+            "hour",
+            "is_weekend",
+            "day_of_week",
+        ]
+        safe_optional_cat = [
+            "tx_type",
+            "transaction_type",
+            "currency",
+        ]
+        keep_cols += [c for c in safe_optional_cat if c in df.columns]
+        keep_cols += ["__ts_num__"]
+
+        df = df[keep_cols].copy()
         return df
 
     def setup(self, stage=None):
@@ -194,10 +209,7 @@ class TabularAMLDataModule(L.LightningDataModule):
         n = len(df)
         train_end, val_end = temporal_split_indices(n, self.train_ratio, self.val_ratio)
 
-        # faithful categorical choices: account IDs, locations, currencies, payment types, calendar fields
         categorical_candidates = [
-            "sender_account",
-            "receiver_account",
             "sender_bank_location",
             "receiver_bank_location",
             "payment_currency",
@@ -213,22 +225,10 @@ class TabularAMLDataModule(L.LightningDataModule):
             "is_weekend",
             "day_of_week",
         ]
-
         categorical_cols = [c for c in categorical_candidates if c in df.columns]
-        numeric_cols = ["amount"]
+        numeric_cols = ["amount"] if "amount" in df.columns else []
 
-        # any remaining non-label columns not used yet:
-        protected = set(categorical_cols + numeric_cols + ["label"])
-        remaining = [c for c in df.columns if c not in protected]
-
-        # encode object-like remaining cols as categorical; numeric remaining as continuous
-        for c in remaining:
-            if df[c].dtype == object:
-                categorical_cols.append(c)
-            elif np.issubdtype(df[c].dtype, np.number):
-                numeric_cols.append(c)
-
-        cat_arrays = []
+        x_cat_arrays = []
         cat_cardinalities = []
         cat_feature_names = []
 
@@ -236,16 +236,20 @@ class TabularAMLDataModule(L.LightningDataModule):
             vals = df[col].astype(str).fillna("__nan__")
             le = LabelEncoder()
             enc = le.fit_transform(vals).astype(np.int64)
-            cat_arrays.append(enc)
+            x_cat_arrays.append(enc)
             cat_cardinalities.append(int(enc.max()) + 1)
             cat_feature_names.append(col)
 
-        if len(cat_arrays) == 0:
+        if len(x_cat_arrays) == 0:
             x_cat = np.zeros((len(df), 0), dtype=np.int64)
         else:
-            x_cat = np.stack(cat_arrays, axis=1).astype(np.int64)
+            x_cat = np.stack(x_cat_arrays, axis=1).astype(np.int64)
 
-        x_num = df[numeric_cols].to_numpy(dtype=np.float32) if len(numeric_cols) > 0 else np.zeros((len(df), 0), dtype=np.float32)
+        x_num = (
+            df[numeric_cols].to_numpy(dtype=np.float32)
+            if len(numeric_cols) > 0
+            else np.zeros((len(df), 0), dtype=np.float32)
+        )
         y = df["label"].to_numpy(dtype=np.float32)
 
         scaler = StandardScaler()
@@ -265,6 +269,14 @@ class TabularAMLDataModule(L.LightningDataModule):
         self.num_numeric_features = x_num.shape[1]
         self.cat_cardinalities = cat_cardinalities
         self.cat_feature_names = cat_feature_names
+
+        print(f"[TabAML] train={train_end}, val={val_end - train_end}, test={n - val_end}")
+        print(f"[TabAML] positive rates: "
+              f"train={y[:train_end].mean():.6f}, "
+              f"val={y[train_end:val_end].mean():.6f}, "
+              f"test={y[val_end:].mean():.6f}")
+        print(f"[TabAML] categorical columns: {categorical_cols}")
+        print(f"[TabAML] numeric columns: {numeric_cols}")
 
     def _loader(self, ds, shuffle: bool):
         return DataLoader(

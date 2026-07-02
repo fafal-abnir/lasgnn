@@ -7,9 +7,7 @@ import torch.nn.functional as F
 from sklearn.metrics import average_precision_score, f1_score, roc_auc_score
 
 from src.temporal_models.caw_edge import CAWEdgeModel
-from src.temporal_models.graphmixer_edge import GraphMixerEdgeModel
 from src.temporal_models.temporal_common import HistoryBank
-from src.temporal_models.tgat_edge import TGATEdgeModel
 from src.temporal_models.tgn_edge import TGNEdgeModel
 
 
@@ -19,56 +17,55 @@ class LitTemporalEdgeModel(L.LightningModule):
         model_name: str,
         num_nodes: int,
         msg_dim: int,
+        node_feat_dim: int,
+        node_features: torch.Tensor,
         hidden_dim: int = 128,
+        time_dim: int = 32,
         lr: float = 1e-3,
         weight_decay: float = 1e-5,
         pos_weight: float = 1.0,
-        max_history: int = 50,
+        max_history: int = 20,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["node_features"])
 
         name = model_name.lower()
-        if name == "tgat":
-            self.model = TGATEdgeModel(
-                num_nodes=num_nodes,
-                msg_dim=msg_dim,
-                memory_dim=hidden_dim,
-                max_history=max_history,
-            )
-        elif name == "tgn":
+        self.model_name = name
+
+        if name == "tgn":
             self.model = TGNEdgeModel(
                 num_nodes=num_nodes,
+                node_feat_dim=node_feat_dim,
                 msg_dim=msg_dim,
                 memory_dim=hidden_dim,
-                time_dim=32,
+                time_dim=time_dim,
                 embedding_dim=hidden_dim,
                 message_dim=hidden_dim,
-            )
-        elif name == "graphmixer":
-            self.model = GraphMixerEdgeModel(
-                num_nodes=num_nodes,
-                msg_dim=msg_dim,
-                hidden_dim=hidden_dim,
-                max_history=max_history,
             )
         elif name == "caw":
             self.model = CAWEdgeModel(
                 num_nodes=num_nodes,
                 msg_dim=msg_dim,
                 hidden_dim=hidden_dim,
+                time_dim=time_dim,
                 max_history=max_history,
             )
         else:
             raise ValueError(f"Unknown temporal model: {model_name}")
 
-        self.model_name = name
         self.history_bank = HistoryBank.empty()
+
         self.register_buffer("_pos_weight", torch.tensor([pos_weight], dtype=torch.float))
+        self.register_buffer("_node_features", node_features.float())
+
+        if self.model_name == "tgn":
+            self.model.set_node_features(self._node_features)
 
     def reset_temporal_state(self):
         self.history_bank = HistoryBank.empty()
+
         if self.model_name == "tgn":
+            self.model.set_node_features(self._node_features)
             self.model.reset_state()
 
     @torch.no_grad()
@@ -130,7 +127,14 @@ class LitTemporalEdgeModel(L.LightningModule):
             pos_weight=self._pos_weight.to(logits.device),
         )
 
-        self.log(f"{stage}_loss", loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=y.size(0))
+        self.log(
+            f"{stage}_loss",
+            loss,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            batch_size=y.size(0),
+        )
 
         metrics = self._compute_metrics(logits, y)
         for name, value in metrics.items():
@@ -144,6 +148,7 @@ class LitTemporalEdgeModel(L.LightningModule):
                     batch_size=y.size(0),
                 )
 
+        # Update state AFTER prediction.
         if self.model_name == "tgn":
             self.model.update_memory(
                 src=batch["src"],
@@ -154,6 +159,7 @@ class LitTemporalEdgeModel(L.LightningModule):
             self.model.detach_state()
 
         self.history_bank.append(batch["src"], batch["dst"], batch["t"], batch["msg"])
+
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -166,4 +172,8 @@ class LitTemporalEdgeModel(L.LightningModule):
         self._shared_step(batch, "test")
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+        return torch.optim.Adam(
+            self.parameters(),
+            lr=self.hparams.lr,
+            weight_decay=self.hparams.weight_decay,
+        )

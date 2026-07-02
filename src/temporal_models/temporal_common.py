@@ -44,24 +44,4 @@ class TimeEncoder(nn.Module):
         self.lin = nn.Linear(1, dim)
 
     def forward(self, dt: Tensor) -> Tensor:
-        return torch.cos(self.lin(dt.unsqueeze(-1)))
-
-
-class EdgePredictor(nn.Module):
-    def __init__(self, emb_dim: int, msg_dim: int, hidden_dim: int):
-        super().__init__()
-        in_dim = emb_dim * 4 + msg_dim
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1),
-        )
-
-    def forward(self, h_src: Tensor, h_dst: Tensor, msg: Tensor) -> Tensor:
-        z = torch.cat(
-            [h_src, h_dst, torch.abs(h_src - h_dst), h_src * h_dst, msg],
-            dim=-1,
-        )
-        return self.mlp(z)
+        return torch.cos(self.lin(dt.view(-1, 1)))

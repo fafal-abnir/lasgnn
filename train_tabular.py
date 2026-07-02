@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-
+from datetime import datetime
 import lightning as L
 import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
@@ -13,7 +13,7 @@ from src.tabular_models.lightning_tabular import LitTabAML
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, required=True, choices=["amlsim", "samld", "saml-d"])
+    parser.add_argument("--dataset", type=str, required=True, choices=["amlsim", "samld"])
     parser.add_argument("--csv_path", type=str, required=True)
 
     parser.add_argument("--batch_size", type=int, default=256)
@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=1e-5)
-    parser.add_argument("--pos_weight", type=float, default=1.0)
+    parser.add_argument("--pos_weight", type=float, default=20.0)
     parser.add_argument("--max_epochs", type=int, default=30)
     parser.add_argument("--train_ratio", type=float, default=0.75)
     parser.add_argument("--val_ratio", type=float, default=0.15)
@@ -39,6 +39,7 @@ def parse_args():
 def main():
     args = parse_args()
     L.seed_everything(42)
+    print(f"\033[93m{vars(args)}\033[0m")
 
     dm = TabularAMLDataModule(
         dataset_name=args.dataset,
@@ -67,15 +68,21 @@ def main():
     )
 
     callbacks = [
-        EarlyStopping(monitor="val_auroc", mode="max", patience=5),
-        ModelCheckpoint(monitor="val_auroc", mode="max", save_top_k=1),
+        EarlyStopping(monitor="val_ap", mode="max", patience=5),
+        ModelCheckpoint(monitor="val_ap", mode="max", save_top_k=1, save_weights_only=True),
     ]
-
+    lightning_root_dir = "experiments"
+    experiment_datetime = datetime.now().strftime('%Y-%m-%d_%H:%M:%S')
+    experiments_dir = f"{lightning_root_dir}/tabaml/{args.dataset}/{experiment_datetime}"
+    csv_logger = CSVLogger(experiments_dir, version="")
+    csv_logger.log_hyperparams(vars(args))
     trainer = L.Trainer(
+        default_root_dir= experiments_dir,
         max_epochs=args.max_epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        logger=CSVLogger("logs", name=f"tabaml_{args.dataset}"),
+        logger = csv_logger,
+        # logger=CSVLogger("logs", name=f"tabaml_{args.dataset}"),
         callbacks=callbacks,
         log_every_n_steps=10,
     )

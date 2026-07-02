@@ -21,6 +21,7 @@ class LSTMAggregation(Aggregation):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.max_num_elements = max_num_elements
+
         self.lstm = LSTM(
             input_size=in_channels,
             hidden_size=out_channels,
@@ -28,6 +29,7 @@ class LSTMAggregation(Aggregation):
             batch_first=True,
             bidirectional=False,
         )
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -54,6 +56,7 @@ class LSTMAggregation(Aggregation):
             dim=dim,
             max_num_elements=max_num_elements,
         )
+
         out, _ = self.lstm(dense_x)
         return out[:, -1]
 
@@ -75,7 +78,11 @@ class SignedGraphConv(MessagePassing):
 
         if aggr == "lstm":
             super().__init__(
-                aggr=LSTMAggregation(aggr_in, aggr_in, max_num_elements=lstm_max_num_elements),
+                aggr=LSTMAggregation(
+                    aggr_in,
+                    aggr_in,
+                    max_num_elements=lstm_max_num_elements,
+                ),
                 **kwargs,
             )
         else:
@@ -90,6 +97,7 @@ class SignedGraphConv(MessagePassing):
         self.sign_lin = Linear(1, in_channels[0], bias=True)
         self.lin_rel = Linear(in_channels[0], out_channels, bias=bias)
         self.lin_root = Linear(in_channels[1], out_channels, bias=False)
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -115,6 +123,7 @@ class SignedGraphConv(MessagePassing):
         x_r = x[1]
         if x_r is not None:
             out = out + self.lin_root(x_r)
+
         return out
 
     def message(self, x_j: Tensor, edge_weight: Tensor) -> Tensor:
@@ -125,6 +134,31 @@ class SignedGraphConv(MessagePassing):
 
 
 class LASGNNEdge(nn.Module):
+    """
+    LAS-GNN edge classifier.
+
+    Plain LAS-GNN:
+        use_edge_features_in_decoder=False
+
+        Decoder input:
+            h_src, h_dst, |h_src - h_dst|, h_src * h_dst
+
+    LAS-GNN-EdgeFeat:
+        use_edge_features_in_decoder=True
+
+        Decoder input:
+            h_src, target_edge_features, h_dst,
+            |h_src - h_dst|, h_src * h_dst
+
+    Important:
+        Message passing still uses only signed edge_attr:
+            +1 original direction
+            -1 reverse direction
+
+        Raw transaction features are used only in the final classifier
+        for lasgnn_edgefeat.
+    """
+
     def __init__(
         self,
         num_node_features: int,
@@ -132,11 +166,17 @@ class LASGNNEdge(nn.Module):
         num_layers: int = 4,
         use_lstm: bool = True,
         dropout: float = 0.0,
-        lstm_max_num_elements: int = 4,
+        lstm_max_num_elements: int = 16,
+        num_edge_features: int | None = None,
+        use_edge_features_in_decoder: bool = False,
     ):
         super().__init__()
-        self.node_emb = Linear(num_node_features, hidden_dim)
+
+        self.use_edge_features_in_decoder = use_edge_features_in_decoder
+        self.hidden_dim = hidden_dim
         self.dropout = dropout
+
+        self.node_emb = Linear(num_node_features, hidden_dim)
 
         self.convs = ModuleList()
         self.norms = ModuleList()
@@ -154,8 +194,27 @@ class LASGNNEdge(nn.Module):
             )
             self.norms.append(BatchNorm(hidden_dim))
 
+        if self.use_edge_features_in_decoder:
+            if num_edge_features is None:
+                raise ValueError(
+                    "num_edge_features must be provided when "
+                    "use_edge_features_in_decoder=True."
+                )
+
+            self.edge_emb = nn.Sequential(
+                nn.Linear(num_edge_features, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, hidden_dim),
+            )
+
+            edge_head_in = hidden_dim * 5
+        else:
+            self.edge_emb = None
+            edge_head_in = hidden_dim * 4
+
         self.edge_head = nn.Sequential(
-            nn.Linear(hidden_dim * 4, hidden_dim),
+            nn.Linear(edge_head_in, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, hidden_dim // 2),
@@ -166,22 +225,72 @@ class LASGNNEdge(nn.Module):
 
     def encode(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor) -> Tensor:
         x = self.node_emb(x)
+
         for conv, norm in zip(self.convs, self.norms):
             h = conv(x, edge_index, edge_attr)
             h = norm(h)
             h = F.relu(h)
             h = F.dropout(h, p=self.dropout, training=self.training)
             x = 0.5 * (x + h)
+
         return x
 
-    def decode(self, h: Tensor, edge_label_index: Tensor) -> Tensor:
+    def decode(
+        self,
+        h: Tensor,
+        edge_label_index: Tensor,
+        edge_label_attr: Tensor | None = None,
+    ) -> Tensor:
         src, dst = edge_label_index
+
         h_src = h[src]
         h_dst = h[dst]
-        z = torch.cat([h_src, h_dst, torch.abs(h_src - h_dst), h_src * h_dst], dim=-1)
+
+        if self.use_edge_features_in_decoder:
+            if edge_label_attr is None:
+                raise RuntimeError(
+                    "LAS-GNN-EdgeFeat requires batch.edge_label_attr. "
+                    "Update datamodule_edge_minibatch.py to provide target edge features."
+                )
+
+            e = self.edge_emb(edge_label_attr)
+
+            z = torch.cat(
+                [
+                    h_src,
+                    e,
+                    h_dst,
+                    torch.abs(h_src - h_dst),
+                    h_src * h_dst,
+                ],
+                dim=-1,
+            )
+
+        else:
+            z = torch.cat(
+                [
+                    h_src,
+                    h_dst,
+                    torch.abs(h_src - h_dst),
+                    h_src * h_dst,
+                ],
+                dim=-1,
+            )
+
         return self.edge_head(z)
 
-    def forward(self, x: Tensor, edge_index: Tensor, edge_attr: Tensor, edge_label_index: Tensor):
+    def forward(
+        self,
+        x: Tensor,
+        edge_index: Tensor,
+        edge_attr: Tensor,
+        edge_label_index: Tensor,
+        edge_label_attr: Tensor | None = None,
+    ):
         h = self.encode(x, edge_index, edge_attr)
-        logits = self.decode(h, edge_label_index)
+        logits = self.decode(
+            h=h,
+            edge_label_index=edge_label_index,
+            edge_label_attr=edge_label_attr,
+        )
         return logits, h

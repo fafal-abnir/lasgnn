@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import torch
 from torch import nn
 
@@ -12,10 +10,6 @@ def trunc_normal_(tensor: torch.Tensor, mean: float = 0.0, std: float = 0.01):
 
 
 class SharedCategoryEmbedding(nn.Module):
-    """
-    Column embedding + shared embedding component.
-    Shared-to-individual ratio defaults to 1/8 as reported best in the paper.
-    """
     def __init__(self, cardinality: int, dim: int, shared_embed_ratio: float = 0.125):
         super().__init__()
         shared_dim = max(1, int(round(dim * shared_embed_ratio)))
@@ -33,10 +27,6 @@ class SharedCategoryEmbedding(nn.Module):
 
 
 class ResidualMultiheadSelfAttention(nn.Module):
-    """
-    Residual attention:
-        softmax(QK^T / sqrt(dk) + prev_scores) V
-    """
     def __init__(self, dim: int, num_heads: int, dropout: float):
         super().__init__()
         if dim % num_heads != 0:
@@ -60,24 +50,23 @@ class ResidualMultiheadSelfAttention(nn.Module):
         qkv = self.qkv(x)
         q, k, v = qkv.chunk(3, dim=-1)
 
-        q = q.view(b, n, self.num_heads, self.head_dim).transpose(1, 2)  # [B, H, N, Hd]
+        q = q.view(b, n, self.num_heads, self.head_dim).transpose(1, 2)
         k = k.view(b, n, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(b, n, self.num_heads, self.head_dim).transpose(1, 2)
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B,H,N,N]
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
         if prev_scores is not None:
             scores = scores + prev_scores
 
         if attn_mask is not None:
-            # attn_mask: [N, N], bool, True means allow
             mask_value = torch.finfo(scores.dtype).min
             scores = scores.masked_fill(~attn_mask.unsqueeze(0).unsqueeze(0), mask_value)
 
         attn = torch.softmax(scores, dim=-1)
         attn = self.dropout(attn)
 
-        out = torch.matmul(attn, v)  # [B,H,N,Hd]
+        out = torch.matmul(attn, v)
         out = out.transpose(1, 2).contiguous().view(b, n, d)
         out = self.out_proj(out)
         return out, scores
@@ -133,15 +122,6 @@ class EncoderStack(nn.Module):
 
 
 class TabAML(nn.Module):
-    """
-    More faithful Tab-AML-style model:
-    - column-based categorical embeddings
-    - shared embedding component
-    - dual-masked transformer encoders
-    - residual attention
-    - MLP over flattened contextual categorical embeddings + continuous features
-    """
-
     def __init__(
         self,
         num_numeric: int,
@@ -168,33 +148,27 @@ class TabAML(nn.Module):
             ]
         )
 
-        self.encoder_masked = EncoderStack(hidden_dim, num_heads, num_layers=max(1, num_layers // 2), dropout=dropout)
-        self.encoder_unmasked = EncoderStack(hidden_dim, num_heads, num_layers=max(1, num_layers - max(1, num_layers // 2)), dropout=dropout)
+        n_masked = max(1, num_layers // 2)
+        n_unmasked = max(1, num_layers - n_masked)
 
-        # build mask for first encoder: only sender_account and receiver_account can attend
+        self.encoder_masked = EncoderStack(hidden_dim, num_heads, n_masked, dropout)
+        self.encoder_unmasked = EncoderStack(hidden_dim, num_heads, n_unmasked, dropout)
+
         num_cat = len(cat_feature_names)
-        mask = torch.zeros((num_cat, num_cat), dtype=torch.bool)
-        if "sender_account" in cat_feature_names and "receiver_account" in cat_feature_names:
-            i = cat_feature_names.index("sender_account")
-            j = cat_feature_names.index("receiver_account")
-            mask[i, i] = True
-            mask[j, j] = True
-            mask[i, j] = True
-            mask[j, i] = True
-        else:
-            # fallback: identity if sender/receiver unavailable
-            mask.fill_diagonal_(True)
+        mask = torch.eye(num_cat, dtype=torch.bool)
         self.register_buffer("first_stage_mask", mask)
 
         input_dim = hidden_dim * num_cat + num_numeric
+        hidden_mlp = max(hidden_dim, input_dim * mlp_hidden_mult)
+
         self.mlp = nn.Sequential(
-            nn.Linear(input_dim, input_dim * mlp_hidden_mult),
+            nn.Linear(input_dim, hidden_mlp),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(input_dim * mlp_hidden_mult, max(input_dim // 2, 1)),
+            nn.Linear(hidden_mlp, max(hidden_dim, input_dim // 2)),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(max(input_dim // 2, 1), 1),
+            nn.Linear(max(hidden_dim, input_dim // 2), 1),
         )
 
     def forward(self, x_num: torch.Tensor, x_cat: torch.Tensor):
@@ -204,7 +178,7 @@ class TabAML(nn.Module):
         cat_tokens = []
         for i, emb in enumerate(self.cat_embs):
             cat_tokens.append(emb(x_cat[:, i]))
-        x = torch.stack(cat_tokens, dim=1)  # [B, num_cat, d]
+        x = torch.stack(cat_tokens, dim=1)
 
         x = self.encoder_masked(x, attn_mask=self.first_stage_mask)
         x = self.encoder_unmasked(x, attn_mask=None)

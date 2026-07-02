@@ -28,7 +28,13 @@ class BaseEdgeDecoder(nn.Module):
 
 
 class GCNEdge(nn.Module):
-    def __init__(self, num_node_features: int, hidden_dim: int = 128, num_layers: int = 3, dropout: float = 0.0):
+    def __init__(
+        self,
+        num_node_features: int,
+        hidden_dim: int = 128,
+        num_layers: int = 3,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.input_proj = nn.Linear(num_node_features, hidden_dim)
         self.convs = nn.ModuleList([GCNConv(hidden_dim, hidden_dim) for _ in range(num_layers)])
@@ -44,7 +50,13 @@ class GCNEdge(nn.Module):
 
 
 class SAGEEdge(nn.Module):
-    def __init__(self, num_node_features: int, hidden_dim: int = 128, num_layers: int = 3, dropout: float = 0.0):
+    def __init__(
+        self,
+        num_node_features: int,
+        hidden_dim: int = 128,
+        num_layers: int = 3,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.input_proj = nn.Linear(num_node_features, hidden_dim)
         self.convs = nn.ModuleList([SAGEConv(hidden_dim, hidden_dim) for _ in range(num_layers)])
@@ -60,10 +72,18 @@ class SAGEEdge(nn.Module):
 
 
 class GATEdge(nn.Module):
-    def __init__(self, num_node_features: int, hidden_dim: int = 128, num_layers: int = 3, dropout: float = 0.0):
+    def __init__(
+        self,
+        num_node_features: int,
+        hidden_dim: int = 128,
+        num_layers: int = 3,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.input_proj = nn.Linear(num_node_features, hidden_dim)
-        self.convs = nn.ModuleList([GATConv(hidden_dim, hidden_dim, heads=1, concat=False) for _ in range(num_layers)])
+        self.convs = nn.ModuleList(
+            [GATConv(hidden_dim, hidden_dim, heads=1, concat=False) for _ in range(num_layers)]
+        )
         self.dropout = dropout
         self.decoder = BaseEdgeDecoder(hidden_dim, dropout)
 
@@ -76,7 +96,13 @@ class GATEdge(nn.Module):
 
 
 class GINEdge(nn.Module):
-    def __init__(self, num_node_features: int, hidden_dim: int = 128, num_layers: int = 3, dropout: float = 0.0):
+    def __init__(
+        self,
+        num_node_features: int,
+        hidden_dim: int = 128,
+        num_layers: int = 3,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.input_proj = nn.Linear(num_node_features, hidden_dim)
         self.convs = nn.ModuleList()
