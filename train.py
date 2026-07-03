@@ -32,6 +32,7 @@ def parse_args():
             "fraudgt_ego",
             "pe_fraudgt",
             "multi_fraudgt",
+            "taml",
             "grande",
             "grande_reduced",
             "grande_no_time",
@@ -69,7 +70,7 @@ def parse_args():
         "--node_feature_mode",
         type=str,
         default="constant",
-        choices=["constant", "degree"],
+        choices=["constant", "degree", "enriched"],
     )
 
     parser.add_argument("--batch_size", type=int, default=2048)
@@ -99,11 +100,27 @@ def parse_args():
     parser.add_argument("--grande_max_dual_neighbors", type=int, default=32)
     parser.add_argument("--grande_max_cross_neighbors", type=int, default=128)
 
+    parser.add_argument("--taml_translation_dim", type=int, default=32)
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    if args.model == "taml" and args.node_feature_mode != "enriched":
+        print(
+            f"[TAML] Overriding node_feature_mode="
+            f"'{args.node_feature_mode}' -> 'enriched'."
+        )
+        args.node_feature_mode = "enriched"
+
+    if args.model == "taml" and args.pos_weight != 1.0:
+        print(
+            f"[TAML] Overriding pos_weight={args.pos_weight} -> 1.0 "
+            f"(TAML trains on balanced undersampled batches)."
+        )
+        args.pos_weight = 1.0
 
     torch.set_float32_matmul_precision("high")
     L.seed_everything(42)
@@ -128,6 +145,10 @@ def main():
     else:
         num_edge_features = dm.train_graph.edge_attr.size(-1)
 
+    num_target_edge_features = None
+    if args.model == "taml":
+        num_target_edge_features = dm.train_edge_label_attr.size(-1)
+
     model = LitEdgeClassifier(
         model_name=args.model,
         num_node_features=dm.train_graph.x.size(-1),
@@ -145,6 +166,8 @@ def main():
         grande_time_dim=args.grande_time_dim,
         grande_max_dual_neighbors=args.grande_max_dual_neighbors,
         grande_max_cross_neighbors=args.grande_max_cross_neighbors,
+        taml_translation_dim=args.taml_translation_dim,
+        num_target_edge_features=num_target_edge_features,
     )
 
     callbacks = [

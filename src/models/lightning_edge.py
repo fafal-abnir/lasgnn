@@ -10,10 +10,15 @@ from src.models.edge_baselines import GCNEdge, GATEdge, GINEdge, SAGEEdge
 from src.models.fraudgt_edge import FraudGTEdge
 from src.models.grande_edge import GRANDEEdge
 from src.models.lasgnn_edge import LASGNNEdge
+from src.models.taml_edge import TAMLEdge
 
 
 LASGNN_EDGEFEAT_MODELS = {
     "lasgnn_edgefeat",
+}
+
+TAML_MODELS = {
+    "taml",
 }
 
 FRAUDGT_MODELS = {
@@ -54,6 +59,8 @@ class LitEdgeClassifier(L.LightningModule):
         grande_time_dim: int = 32,
         grande_max_dual_neighbors: int = 32,
         grande_max_cross_neighbors: int = 128,
+        taml_translation_dim: int = 32,
+        num_target_edge_features: int | None = None,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -130,6 +137,20 @@ class LitEdgeClassifier(L.LightningModule):
                 dropout=dropout,
             )
 
+        elif name in TAML_MODELS:
+            self.model = TAMLEdge(
+                num_node_features=num_node_features,
+                num_edge_features=num_edge_features,
+                hidden_dim=hidden_dim,
+                edge_hidden_dim=edge_hidden_dim,
+                num_layers=num_layers,
+                num_heads=num_heads,
+                dropout=dropout,
+                mlp_hidden_dim=hidden_dim,
+                translation_dim=taml_translation_dim,
+                num_target_edge_features=num_target_edge_features,
+            )
+
         elif name in GRANDE_MODELS:
             self.model = GRANDEEdge(
                 num_node_features=num_node_features,
@@ -153,7 +174,7 @@ class LitEdgeClassifier(L.LightningModule):
         )
 
     def forward(self, batch):
-        if self.model_name in LASGNN_EDGEFEAT_MODELS:
+        if self.model_name in LASGNN_EDGEFEAT_MODELS or self.model_name in TAML_MODELS:
             return self.model(
                 batch.x,
                 batch.edge_index,
