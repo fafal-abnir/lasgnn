@@ -133,6 +133,13 @@ def main():
         )
         args.weight_decay = 5e-3
 
+    if args.model == "taml" and args.max_epochs != 250:
+        print(
+            f"[TAML] Overriding max_epochs={args.max_epochs} -> 250 "
+            f"(paper recipe, early stopping on train loss plateau)."
+        )
+        args.max_epochs = 250
+
     torch.set_float32_matmul_precision("high")
     L.seed_everything(42)
 
