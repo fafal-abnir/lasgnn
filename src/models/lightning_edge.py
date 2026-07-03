@@ -283,6 +283,13 @@ class LitEdgeClassifier(L.LightningModule):
         self._shared_step(batch, "test")
 
     def configure_optimizers(self):
+        if self.model_name in TAML_MODELS:
+            return torch.optim.AdamW(
+                self.parameters(),
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+            )
+
         return torch.optim.Adam(
             self.parameters(),
             lr=self.lr,

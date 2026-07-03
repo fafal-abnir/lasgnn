@@ -122,6 +122,17 @@ def main():
         )
         args.pos_weight = 1.0
 
+    if args.model == "taml" and args.lr != 1e-3:
+        print(f"[TAML] Overriding lr={args.lr} -> 0.001 (paper recipe).")
+        args.lr = 1e-3
+
+    if args.model == "taml" and args.weight_decay != 5e-3:
+        print(
+            f"[TAML] Overriding weight_decay={args.weight_decay} -> 0.005 "
+            f"(paper recipe)."
+        )
+        args.weight_decay = 5e-3
+
     torch.set_float32_matmul_precision("high")
     L.seed_everything(42)
 
@@ -170,18 +181,34 @@ def main():
         num_target_edge_features=num_target_edge_features,
     )
 
-    callbacks = [
-        EarlyStopping(
-            monitor="val_ap",
-            mode="max",
-            patience=10,
-        ),
-        ModelCheckpoint(
-            monitor="val_ap",
-            mode="max",
-            save_top_k=1,
-        ),
-    ]
+    if args.model == "taml":
+        callbacks = [
+            EarlyStopping(
+                monitor="train_loss",
+                mode="min",
+                patience=16,
+                min_delta=1e-2,
+                check_on_train_epoch_end=True,
+            ),
+            ModelCheckpoint(
+                monitor="val_ap",
+                mode="max",
+                save_top_k=1,
+            ),
+        ]
+    else:
+        callbacks = [
+            EarlyStopping(
+                monitor="val_ap",
+                mode="max",
+                patience=10,
+            ),
+            ModelCheckpoint(
+                monitor="val_ap",
+                mode="max",
+                save_top_k=1,
+            ),
+        ]
 
     lightning_root_dir = "experiments"
     experiment_datetime = datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
@@ -200,6 +227,7 @@ def main():
         logger=csv_logger,
         callbacks=callbacks,
         log_every_n_steps=10,
+        gradient_clip_val=1.0 if args.model == "taml" else None,
     )
 
     trainer.fit(model, datamodule=dm)
