@@ -35,6 +35,10 @@ GRANDE_MODELS = {
     "grande_line",
 }
 
+TAML_MODELS = {
+    "taml",
+}
+
 
 def sort_edges_by_dst_then_time(
     edge_index: torch.Tensor,
@@ -421,6 +425,34 @@ class GrandeFastLeakageSafeTransform:
         return _filter_batch_edges(batch, keep)
 
 
+class BalancedEdgeBatchSampler(torch.utils.data.Sampler):
+    """
+    Undersamples the majority class to the minority count every epoch and
+    yields interleaved 0/1 batches of positions into edge_label_index.
+    """
+
+    def __init__(self, edge_label: torch.Tensor, batch_size: int):
+        self.batch_size = batch_size
+        edge_label = edge_label.detach().cpu()
+        self.pos_idx = (edge_label == 1).nonzero(as_tuple=False).view(-1)
+        self.neg_idx = (edge_label == 0).nonzero(as_tuple=False).view(-1)
+
+    def __iter__(self):
+        n = min(self.pos_idx.numel(), self.neg_idx.numel())
+        pos = self.pos_idx[torch.randperm(self.pos_idx.numel())][:n]
+        neg = self.neg_idx[torch.randperm(self.neg_idx.numel())][:n]
+
+        interleaved = torch.empty(2 * n, dtype=torch.long)
+        interleaved[0::2] = neg
+        interleaved[1::2] = pos
+
+        for start in range(0, 2 * n - self.batch_size + 1, self.batch_size):
+            yield interleaved[start : start + self.batch_size].tolist()
+
+    def __len__(self):
+        return (2 * min(self.pos_idx.numel(), self.neg_idx.numel())) // self.batch_size
+
+
 class TransactionEdgeDataModule(LightningDataModule):
     """
     Fast practical datamodule with leakage control.
@@ -509,8 +541,11 @@ class TransactionEdgeDataModule(LightningDataModule):
     def _is_grande_family(self) -> bool:
         return self.model_name in GRANDE_MODELS
 
+    def _is_taml_family(self) -> bool:
+        return self.model_name in TAML_MODELS
+
     def _uses_raw_edge_features(self) -> bool:
-        return self._is_fraudgt_family() or self._is_grande_family()
+        return self._is_fraudgt_family() or self._is_grande_family() or self._is_taml_family()
 
     def _fraudgt_variant_flags(self) -> dict[str, bool]:
         name = self.model_name
@@ -621,6 +656,36 @@ class TransactionEdgeDataModule(LightningDataModule):
                 self.train_transform = FraudGTEgoTransform(use_ego=use_ego)
                 self.val_transform = FraudGTEgoTransform(use_ego=use_ego)
                 self.test_transform = FraudGTEgoTransform(use_ego=use_ego)
+
+            elif self._is_taml_family():
+                self.train_graph = make_fraudgt_graph(
+                    train_base,
+                    temporal_sort=self.temporal_sort,
+                    use_rmp=True,
+                )
+                self.val_graph = make_fraudgt_graph(
+                    val_base,
+                    temporal_sort=self.temporal_sort,
+                    use_rmp=True,
+                )
+                self.test_graph = make_fraudgt_graph(
+                    test_base,
+                    temporal_sort=self.temporal_sort,
+                    use_rmp=True,
+                )
+
+                self.train_transform = EdgeLabelAttrTransform(
+                    edge_label_attr=self.train_edge_label_attr,
+                    edge_label_id=self.train_edge_label_id,
+                )
+                self.val_transform = EdgeLabelAttrTransform(
+                    edge_label_attr=self.val_edge_label_attr,
+                    edge_label_id=self.val_edge_label_id,
+                )
+                self.test_transform = EdgeLabelAttrTransform(
+                    edge_label_attr=self.test_edge_label_attr,
+                    edge_label_id=self.test_edge_label_id,
+                )
 
             else:
                 # GRANDE:
@@ -754,6 +819,13 @@ class TransactionEdgeDataModule(LightningDataModule):
                     edge_label_id=self.test_edge_label_id,
                 )
 
+        if self.node_feature_mode == "enriched":
+            x_min = self.train_graph.x.min(dim=0).values
+            x_range = self.train_graph.x.max(dim=0).values - x_min
+            x_range = torch.where(x_range == 0, torch.ones_like(x_range), x_range)
+            for graph in (self.train_graph, self.val_graph, self.test_graph):
+                graph.x = (graph.x - x_min) / x_range
+
         print(
             f"[DataModule] model={self.model_name}, "
             f"node_dim={self.train_graph.x.size(-1)}, "
@@ -782,7 +854,7 @@ class TransactionEdgeDataModule(LightningDataModule):
                 "validation/test target edges are excluded from their own message-passing graphs."
             )
 
-        if self._is_grande_family() or self._is_lasgnn_edgefeat():
+        if self._is_grande_family() or self._is_lasgnn_edgefeat() or self._is_taml_family():
             print(
                 f"[TargetEdgeFeatures] target_edge_attr_dim="
                 f"{self.train_edge_label_attr.size(-1)}; "
@@ -817,6 +889,23 @@ class TransactionEdgeDataModule(LightningDataModule):
         )
 
     def train_dataloader(self):
+        if self._is_taml_family():
+            return LinkNeighborLoader(
+                data=self.train_graph,
+                num_neighbors=self.num_neighbors,
+                edge_label_index=self.train_edge_label_index,
+                edge_label=self.train_edge_label,
+                batch_sampler=BalancedEdgeBatchSampler(
+                    self.train_edge_label,
+                    self.batch_size,
+                ),
+                neg_sampling=None,
+                num_workers=self.num_workers,
+                persistent_workers=self.num_workers > 0,
+                pin_memory=True,
+                transform=self.train_transform,
+            )
+
         return self._loader(
             data=self.train_graph,
             edge_label_index=self.train_edge_label_index,

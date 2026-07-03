@@ -305,3 +305,4 @@ pyrightconfig.json
 /logs/
 /experiments/
 /experiments-back/
+.DS_Store
