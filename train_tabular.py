@@ -32,13 +32,14 @@ def parse_args():
 
     parser.add_argument("--shared_embed_ratio", type=float, default=0.125)
     parser.add_argument("--mlp_hidden_mult", type=int, default=4)
+    parser.add_argument("--seed", type=int, default=42)
 
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    L.seed_everything(42)
+    L.seed_everything(args.seed)
     print(f"\033[93m{vars(args)}\033[0m")
 
     dm = TabularAMLDataModule(
