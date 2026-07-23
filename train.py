@@ -62,6 +62,8 @@ def parse_args():
             "btc_otc",
             "alpha",
             "otc",
+            "upbithack",
+            "ascendexhacker",
         ],
     )
 

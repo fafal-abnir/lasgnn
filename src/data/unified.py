@@ -10,6 +10,7 @@ from src.data.samld import build_unified_samld_df
 from src.data.amlworld import build_unified_amlworld_df
 from src.data.bitcoin_alpha import build_unified_bitcoin_alpha_df
 from src.data.bitcoin_otc import build_unified_bitcoin_otc_df
+from src.data.crypto_hack import build_unified_ascendexhacker_df, build_unified_upbithack_df
 
 REQUIRED_UNIFIED_COLS = {"src", "dst", "timestamp", "amount", "label"}
 
@@ -32,11 +33,11 @@ def _minmax_scale_features(df: pd.DataFrame, train_end: int) -> pd.DataFrame:
 
 
 def load_unified_df(
-    dataset_name: str,
-    csv_path: str,
-    train_ratio: float = 0.7,
-    val_ratio: float = 0.15,
-    max_rows: int | None = None,
+        dataset_name: str,
+        csv_path: str,
+        train_ratio: float = 0.7,
+        val_ratio: float = 0.15,
+        max_rows: int | None = None,
 ):
     name = dataset_name.lower()
 
@@ -74,6 +75,21 @@ def load_unified_df(
 
     if name in {"bitcoin_otc", "btc_otc", "otc"}:
         return build_unified_bitcoin_otc_df(
+            csv_path=csv_path,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            max_rows=max_rows,
+        )
+    if name == "ascendexhacker":
+        return build_unified_ascendexhacker_df(
+            csv_path=csv_path,
+            train_ratio=train_ratio,
+            val_ratio=val_ratio,
+            max_rows=max_rows,
+        )
+
+    if name == "upbithack":
+        return build_unified_upbithack_df(
             csv_path=csv_path,
             train_ratio=train_ratio,
             val_ratio=val_ratio,
