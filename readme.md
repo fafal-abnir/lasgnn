@@ -35,7 +35,6 @@ Tab-AML does not use message passing. To reduce sender-receiver pair leakage, tr
 
 The primary metric is **AUCPR**. We also report AUROC, precision, recall, and F1 score.
 
-Results are reported as mean and standard deviation over five runs using seeds `1, 2, 3, 4, 5`.
 
 ## Example Commands
 
