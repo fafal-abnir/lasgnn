@@ -2,7 +2,7 @@
 
 This repository contains the baseline implementations used to evaluate:
 
-> **TraceFormer: A Role-Aware Temporal Trace Transformer for Money Laundering Detection**
+> **TraceFormer: A Transformer-based Temporal Random Walk Encoder for Money Laundering Detection**
 
 ## Baselines
 
